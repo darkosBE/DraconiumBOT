@@ -39,16 +39,6 @@ bot.connect();
 
 ---
 
-## Running
-
-```bash
-# Multi-bot join script
-node node_modules/draconium/example/join.js
-
-# Discord bot controller
-DISCORD_TOKEN=your_token node node_modules/draconium/discord-bot.js
-```
-
 ---
 
 ## API
@@ -125,7 +115,13 @@ const { Bot } = require('draconium');
 Requires `discord.js` v14.
 
 Discord bot src link
-https://
+[Discord bot Version](https://github.com/darkosBE/DraconiumBOT/blob/main/example/discord-bot.js)
+
+**I have create a discord bot version so u dont have too.**
+
+**Everythings currently on beta**
+
+**Please expect some bugs. I u find any bugs please do create an issue. i usually check daily.**
 
 **Setup:**
 1. Create a bot at https://discord.com/developers/applications
