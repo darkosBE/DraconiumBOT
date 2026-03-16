@@ -1,0 +1,39 @@
+{
+  "name": "draconium",
+  "version": "1.0.6",
+  "description": "AFK bot for Minecraft Pocket Edition 0.14.x / PocketMine-MP. Custom RakNet, zero game-protocol dependencies.",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "example/",
+    "discord-bot.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "bot":   "node example/bot.js",
+    "join":  "node example/join.js",
+    "start": "node example/bot.js"
+  },
+  "keywords": [
+    "minecraft",
+    "mcpe",
+    "pocket-edition",
+    "pocketmine",
+    "bot",
+    "afk",
+    "raknet",
+    "0.14"
+  ],
+  "author": "syzdark",
+  "license": "GPL-3.0-only",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "peerDependencies": {
+    "discord.js": "^14.0.0"
+  }
+}
