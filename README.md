@@ -326,3 +326,5 @@ Discord bot src link
 
 # preview
 ![alt text](https://cdn.discordapp.com/attachments/1483032463755186247/1483045852443574272/duP1QuM.png?ex=69b92994&is=69b7d814&hm=0a3fa47659b21e0913b9444744e142b07966b1707374ef1e09d30e2afca9696f&animated=true)
+
+![alt text](lv_0_20260316182002.gif)
