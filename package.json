@@ -1,32 +1,30 @@
 {
   "name": "draconium",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "description": "AFK bot for Minecraft Pocket Edition 0.14.x / PocketMine-MP. Custom RakNet, zero game-protocol dependencies.",
-  "main": "src/index.js",
+  "main": "index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./index.js"
   },
   "files": [
+    "index.js",
     "src/",
     "example/",
-    "discord-bot.js",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "bot":   "node example/bot.js",
-    "join":  "node example/join.js",
-    "start": "node example/bot.js"
+    "start": "node example/discord-bot.js"
   },
   "keywords": [
     "minecraft",
     "mcpe",
     "pocket-edition",
     "pocketmine",
-    "bot",
     "afk",
+    "bot",
     "raknet",
-    "0.14"
+    "bedrock"
   ],
   "author": "syzdark",
   "license": "GPL-3.0-only",
@@ -35,5 +33,18 @@
   },
   "peerDependencies": {
     "discord.js": "^14.0.0"
-  }
+  },
+  "peerDependenciesMeta": {
+    "discord.js": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/darkosBE/DraconiumBOT"
+  },
+  "bugs": {
+    "url": "https://github.com/darkosBE/DraconiumBOT/issues"
+  },
+  "homepage": "https://github.com/darkosBE/DraconiumBOT#readme"
 }

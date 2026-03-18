@@ -1,8 +1,9 @@
 'use strict';
 
-const zlib = require('zlib');
+const zlib   = require('zlib');
+const crypto = require('crypto');
 const { PKT, PLAY_STATUS, MOVE_MODE, TEXT_TYPE, PROTOCOL_VERSION } = require('./ids');
-const { readString, writeString, randomUUID } = require('./binary');
+const { readString, writeString } = require('./binary');
 const { STEVE_SKIN } = require('./skin');
 
 function decodeBatch(data, onPacket) {
@@ -18,9 +19,9 @@ function decodeBatch(data, onPacket) {
     });
   };
 
-  tryInflate(compressed, (inflated) => {
+  tryInflate(compressed, inflated => {
     if (!inflated) {
-      tryInflate(data, (inflated2) => {
+      tryInflate(data, inflated2 => {
         if (inflated2) parseBatchPayload(inflated2, onPacket);
       });
       return;
@@ -56,6 +57,18 @@ function encodeBatch(mcpePayload, cb) {
   });
 }
 
+function randomUUID() {
+  const b = crypto.randomBytes(16);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  return b;
+}
+
+function stableClientId(username) {
+  const hash = crypto.createHash('sha256').update(username).digest();
+  return hash.readBigInt64BE(0);
+}
+
 function encodeLogin(username, host) {
   const buf = Buffer.alloc(9000);
   let o = 0;
@@ -63,12 +76,18 @@ function encodeLogin(username, host) {
   buf.writeUInt8(PKT.LOGIN, o++);
   o += writeString(buf, o, username);
   buf.writeInt32BE(PROTOCOL_VERSION, o); o += 4;
-  buf.writeInt32BE(PROTOCOL_VERSION, o); o += 4; 
-  buf.writeBigInt64BE(BigInt((Math.random() * 0xFFFFFFFF) | 0), o); o += 8;  
-  randomUUID().copy(buf, o); o += 16;             
-  o += writeString(buf, o, host);                 
-  o += writeString(buf, o, '');                    
-  o += writeString(buf, o, STEVE_SKIN.length === 8192 ? 'Standard' : 'Custom');
+  buf.writeInt32BE(PROTOCOL_VERSION, o); o += 4;
+
+  buf.writeBigInt64BE(stableClientId(username), o); o += 8;
+
+  randomUUID().copy(buf, o); o += 16;
+
+  o += writeString(buf, o, host);
+
+  o += writeString(buf, o, 'en_US');
+
+  const skinType = STEVE_SKIN.length === 8192 ? 'Standard' : 'Custom';
+  o += writeString(buf, o, skinType);
   buf.writeUInt16BE(STEVE_SKIN.length, o); o += 2;
   STEVE_SKIN.copy(buf, o); o += STEVE_SKIN.length;
 
@@ -84,7 +103,7 @@ function decodeStartGame(data) {
       spawnY: data.readInt32BE(25),
       spawnZ: data.readInt32BE(29),
       x:      data.readFloatBE(33),
-      y:      data.readFloatBE(37),  
+      y:      data.readFloatBE(37),
       z:      data.readFloatBE(41),
     };
   } catch (_) { return null; }
@@ -95,11 +114,11 @@ const EYE_HEIGHT = 1.62;
 function decodeMovePlayer(data) {
   if (data.length < 34) return null;
   try {
-    let o     = 0;
-    const eid  = Number(data.readBigInt64BE(o)); o += 8;
-    const x    = data.readFloatBE(o); o += 4;
-    const eyeY = data.readFloatBE(o); o += 4;
-    const z    = data.readFloatBE(o); o += 4;
+    let o = 0;
+    const eid      = Number(data.readBigInt64BE(o)); o += 8;
+    const x        = data.readFloatBE(o); o += 4;
+    const eyeY     = data.readFloatBE(o); o += 4;
+    const z        = data.readFloatBE(o); o += 4;
     o += 12;
     const mode     = data.length > o ? data.readUInt8(o++) : MOVE_MODE.NORMAL;
     const onGround = data.length > o ? data.readUInt8(o)   : 1;
@@ -108,24 +127,24 @@ function decodeMovePlayer(data) {
 }
 
 function encodeMovePlayer(eid, x, y, z, onGround) {
-  const buf = Buffer.alloc(1 + 8 + 4*6 + 2);
+  const buf = Buffer.alloc(1 + 8 + 4 * 6 + 2);
   let o = 0;
   buf.writeUInt8(PKT.MOVE_PLAYER, o++);
   buf.writeBigInt64BE(BigInt(eid), o); o += 8;
-  buf.writeFloatBE(x,            o); o += 4;
-  buf.writeFloatBE(y + EYE_HEIGHT, o); o += 4;
-  buf.writeFloatBE(z,            o); o += 4;
-  buf.writeFloatBE(0,            o); o += 4;  
-  buf.writeFloatBE(0,            o); o += 4;  
-  buf.writeFloatBE(0,            o); o += 4;  
-  buf.writeUInt8(MOVE_MODE.NORMAL,   o++);
-  buf.writeUInt8(onGround ? 1 : 0,   o);
+  buf.writeFloatBE(x,               o); o += 4;
+  buf.writeFloatBE(y + EYE_HEIGHT,  o); o += 4;
+  buf.writeFloatBE(z,               o); o += 4;
+  buf.writeFloatBE(0,               o); o += 4;
+  buf.writeFloatBE(0,               o); o += 4;
+  buf.writeFloatBE(0,               o); o += 4;
+  buf.writeUInt8(MOVE_MODE.NORMAL,    o++);
+  buf.writeUInt8(onGround ? 1 : 0,    o);
   return buf;
 }
 
 function decodeText(data) {
   try {
-    let o    = 0;
+    let o = 0;
     const type = data.readUInt8(o++);
     let source = '', message = '';
 
@@ -135,8 +154,8 @@ function decodeText(data) {
     } else if (type === TEXT_TYPE.RAW || type === TEXT_TYPE.TIP || type === TEXT_TYPE.SYSTEM) {
       const m = readString(data, o); o += m.size; message = m.value;
     } else if (type === TEXT_TYPE.TRANSLATION) {
-      const m    = readString(data, o); o += m.size; message = m.value;
-      const cnt  = data.length > o ? data.readUInt8(o++) : 0;
+      const m   = readString(data, o); o += m.size; message = m.value;
+      const cnt = data.length > o ? data.readUInt8(o++) : 0;
       const params = [];
       for (let i = 0; i < cnt && o + 2 <= data.length; i++) {
         const p = readString(data, o); o += p.size; params.push(p.value);
@@ -153,7 +172,7 @@ function encodeChat(username, message) {
   const mLen = Buffer.byteLength(message,  'utf8');
   const buf  = Buffer.alloc(1 + 1 + 2 + uLen + 2 + mLen);
   let o = 0;
-  buf.writeUInt8(PKT.TEXT, o++);
+  buf.writeUInt8(PKT.TEXT,       o++);
   buf.writeUInt8(TEXT_TYPE.CHAT, o++);
   o += writeString(buf, o, username);
   o += writeString(buf, o, message);
@@ -216,6 +235,14 @@ function encodeRequestChunkRadius(radius = 8) {
   return buf;
 }
 
+function encodeAdventureSettings() {
+  const buf = Buffer.alloc(9);
+  buf.writeUInt8(PKT.ADVENTURE_SETTINGS, 0);
+  buf.writeUInt32BE(0, 1);
+  buf.writeUInt32BE(0, 5);
+  return buf;
+}
+
 module.exports = {
   decodeBatch,
   encodeBatch,
@@ -233,5 +260,6 @@ module.exports = {
   decodePlayStatus,
   decodeDisconnect,
   encodeRequestChunkRadius,
+  encodeAdventureSettings,
   EYE_HEIGHT,
 };

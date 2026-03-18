@@ -1,37 +1,31 @@
 'use strict';
 
-/**
- * Draconium — Discord Bot Controller
- *
- * Setup:
- *   npm install discord.js
- *   DISCORD_TOKEN=your_token node discord-bot.js
- *
- * Required Discord intents: Guilds, GuildMessages, MessageContent
- */
-
 const {
   Client,
   GatewayIntentBits,
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
+  MessageFlags,
 } = require('discord.js');
 
-const { Bot } = require('draconium');
+const { Bot } = require('../index');
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN || 'BOT TOKEN HERE';
 const PREFIX        = process.env.PREFIX || '.';
 const VERSION       = '0.14.3';
-const BOT_DELAY     = 4000;   // ms between staggered bot connects
+const BOT_DELAY     = 4000;
 const MAX_RETRY     = 3;
-const OFFLINE_MS    = 20000;  // ms before declaring server unresponsive
-const MAX_LOGS      = 200;    // max log lines kept per bot
+const OFFLINE_MS    = 20000;
+const MAX_LOGS      = 200;
+const AUTH_DELAY    = 2500;
 
-if (!DISCORD_TOKEN) {
-  console.error('[Discord] DISCORD_TOKEN environment variable is not set.');
-  console.error('          Run: DISCORD_TOKEN=your_token node discord-bot.js');
+if (!DISCORD_TOKEN || DISCORD_TOKEN === 'BOT TOKEN HERE') {
+  process.stderr.write('DISCORD_TOKEN is not set.\nRun: DISCORD_TOKEN=your_token node discord-bot.js\n');
   process.exit(1);
 }
 
@@ -49,15 +43,12 @@ const C = {
 const globalConfig = {
   register:     '',
   login:        '',
-  registerMode: 'single', // 'single' = /register <pw>  |  'double' = /register <pw> <pw>
+  registerMode: 'single',
   joinMsg1:     '',
   joinMsg2:     '',
 };
 
-const AUTH_DELAY = 2500; // ms between auth commands — prevents anti-spam kicks
-
-const registry = new Map();
-
+const registry    = new Map();
 const chatBridges = new Map();
 
 function ts() {
@@ -67,7 +58,7 @@ function ts() {
 function pushLog(username, line) {
   const e = registry.get(username.toLowerCase());
   if (!e) return;
-  e.logs.push(`\`[${ts()}]\` ${line}`);
+  e.logs.push(`[${ts()}] ${line}`);
   if (e.logs.length > MAX_LOGS) e.logs.shift();
 }
 
@@ -80,60 +71,70 @@ function fmtDuration(ms) {
   return `${s}s`;
 }
 
-function statusDot(s) {
+function statusLabel(s) {
   return { online: 'Online', connecting: 'Connecting', offline: 'Offline', error: 'Error' }[s] ?? 'Unknown';
-}
-
-function foot() {
-  return { text: 'Draconium  |  MCPE AFK Bot' };
-}
-
-function paginateLogs(lines, max = 1900) {
-  const pages = [];
-  let cur = '';
-  for (const l of lines) {
-    if ((cur + '\n' + l).length > max) { pages.push(cur); cur = l; }
-    else cur = cur ? cur + '\n' + l : l;
-  }
-  if (cur) pages.push(cur);
-  return pages.length ? pages : ['*(no logs yet)*'];
-}
-
-function configSummary() {
-  const none = '*(not set)*';
-  return [
-    `**Register:** ${globalConfig.register     || none}`,
-    `**Register Mode:** ${globalConfig.registerMode || 'single'}`,
-    `**Login:** ${globalConfig.login           || none}`,
-    `**Join Msg 1:** ${globalConfig.joinMsg1   || none}`,
-    `**Join Msg 2:** ${globalConfig.joinMsg2   || none}`,
-  ].join('\n');
 }
 
 function stripColor(str) {
   return str.replace(/\u00a7./g, '');
 }
 
+function configSummary() {
+  const none = 'not set';
+  return [
+    `Register       ${globalConfig.register     || none}`,
+    `Register Mode  ${globalConfig.registerMode || 'single'}`,
+    `Login          ${globalConfig.login        || none}`,
+    `Join Msg 1     ${globalConfig.joinMsg1     || none}`,
+    `Join Msg 2     ${globalConfig.joinMsg2     || none}`,
+  ].join('\n');
+}
+
+function paginateLogs(lines, max = 1800) {
+  const pages = [];
+  let cur = '';
+  for (const l of lines) {
+    const next = cur ? cur + '\n' + l : l;
+    if (next.length > max) { pages.push(cur); cur = l; }
+    else cur = next;
+  }
+  if (cur) pages.push(cur);
+  return pages.length ? pages : ['(no logs yet)'];
+}
+
+function cv2(components, flags = 0) {
+  return { components, flags: MessageFlags.IsComponentsV2 | flags };
+}
+
+function container(color, ...textLines) {
+  const c = new ContainerBuilder().setAccentColor(color);
+  for (const line of textLines) {
+    c.addTextDisplayComponents(new TextDisplayBuilder().setContent(line));
+  }
+  return c;
+}
+
+function sep() {
+  return new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true);
+}
+
 async function bridgeMcToDiscord(username, source, message) {
   const bridge = chatBridges.get(username.toLowerCase());
-  if (!bridge || !bridge.enabled) return;
+  if (!bridge?.enabled) return;
+  if (!source && !bridge.relayServerMessages) return;
   try {
     const channel = await client.channels.fetch(bridge.channelId);
     if (!channel) return;
     const entry = registry.get(username.toLowerCase());
-    await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.BRIDGE)
-          .setAuthor({ name: source ? `${source}  (via ${username})` : `Server  (via ${username})` })
-          .setDescription(stripColor(message))
-          .setFooter({ text: entry?.server ?? '' })
-          .setTimestamp(),
-      ],
-    });
-  } catch (e) {
-    console.error('[Bridge] MC->Discord failed:', e.message);
-  }
+    const label = source ? `${source}  (via ${username})` : `Server  (via ${username})`;
+    await channel.send(cv2([
+      container(C.BRIDGE,
+        `**${label}**`,
+        stripColor(message),
+        `-# ${entry?.server ?? ''}`,
+      ),
+    ]));
+  } catch (_) {}
 }
 
 function spawnBot(opts) {
@@ -147,28 +148,18 @@ function spawnBot(opts) {
     return;
   }
 
-  const entry = {
-    bot:      null,
-    username,
-    server,
-    status:   'connecting',
-    logs:     [],
-    joinedAt: null,
-  };
+  const entry = { bot: null, username, server, status: 'connecting', logs: [], joinedAt: null };
   registry.set(key, entry);
 
-  const log = (line) => {
-    pushLog(username, line);
-    onEvent('log', username, line);
-  };
+  const log = (line) => { pushLog(username, line); onEvent('log', username, line); };
 
   log(attempt > 1
-    ? `Retry attempt ${attempt}/${MAX_RETRY} — connecting to \`${server}\``
-    : `Connecting to \`${server}\``
+    ? `Retry ${attempt}/${MAX_RETRY} — connecting to ${server}`
+    : `Connecting to ${server}`
   );
 
-  const bot = new Bot({ host, port, username, version: VERSION });
-  entry.bot = bot;
+  const bot    = new Bot({ host, port, username, version: VERSION });
+  entry.bot    = bot;
 
   let joined   = false;
   let givingUp = false;
@@ -176,33 +167,22 @@ function spawnBot(opts) {
   const offlineTimer = setTimeout(() => {
     if (joined) return;
     givingUp = true;
-    log(`No response from \`${server}\` after ${OFFLINE_MS / 1000}s — server may be offline`);
+    log(`No response from ${server} after ${OFFLINE_MS / 1000}s`);
     onEvent('timeout', username);
     registry.delete(key);
     bot.disconnect('no-response');
   }, OFFLINE_MS);
 
-  // Auth state machine — responds to server prompts with appropriate delay
-  // to avoid anti-spam kicks. Never sends both register and login at once.
-  let authState    = 'none';   // 'none' | 'registered' | 'done'
+  let authState    = 'none';
   let lastAuthSent = 0;
   let authTimer    = null;
 
   function sendAuth(cmd) {
     if (authTimer) { clearTimeout(authTimer); authTimer = null; }
     const wait = AUTH_DELAY - (Date.now() - lastAuthSent);
-    if (wait <= 0) {
-      lastAuthSent = Date.now();
-      bot.chat(cmd);
-      log(`Auth: ${cmd}`);
-    } else {
-      authTimer = setTimeout(() => {
-        lastAuthSent = Date.now();
-        bot.chat(cmd);
-        log(`Auth: ${cmd}`);
-        authTimer = null;
-      }, wait);
-    }
+    const fire = () => { lastAuthSent = Date.now(); bot.chat(cmd); log(`Auth: ${cmd}`); authTimer = null; };
+    if (wait <= 0) fire();
+    else authTimer = setTimeout(fire, wait);
   }
 
   function buildRegister() {
@@ -211,18 +191,12 @@ function spawnBot(opts) {
       : `/register ${globalConfig.register}`;
   }
 
-  bot.on('spawn', () => {
-    log(`Spawned on \`${server}\` — waiting for server auth prompt`);
-    // Do NOT send auth here — wait for the server to ask.
-    // Sending immediately triggers anti-spam on most servers.
-  });
-
   bot.on('ready', () => {
-    joined          = true;
-    entry.status    = 'online';
-    entry.joinedAt  = new Date();
+    joined         = true;
+    entry.status   = 'online';
+    entry.joinedAt = new Date();
     clearTimeout(offlineTimer);
-    log(`**${username}** is in-game on \`${server}\``);
+    log(`${username} is in-game on ${server}`);
     if (globalConfig.joinMsg1) { bot.chat(globalConfig.joinMsg1); log(`Sent: ${globalConfig.joinMsg1}`); }
     if (globalConfig.joinMsg2) { bot.chat(globalConfig.joinMsg2); log(`Sent: ${globalConfig.joinMsg2}`); }
     onEvent('ready', username);
@@ -230,11 +204,8 @@ function spawnBot(opts) {
 
   bot.on('chat', ({ source, message }) => {
     const clean = stripColor(message);
-    const src   = source ? `<${source}> ` : '';
-    log(`${src}${clean}`);
+    log(source ? `<${source}> ${clean}` : clean);
 
-    // Auth: only respond to server messages (empty source), only before joined,
-    // and only for one command per trigger (not both at once).
     if (!joined && !source) {
       const lower = clean.toLowerCase();
 
@@ -245,10 +216,8 @@ function spawnBot(opts) {
         authState = 'done';
         sendAuth(`/login ${globalConfig.login}`);
       } else {
-        // Common registration-success patterns — follow up with login
-        const regOk = lower.includes('registrado') || lower.includes('registered') ||
-                      lower.includes('successfully') || lower.includes('contraseña') ||
-                      lower.includes('password set');
+        const regOk = ['registrado','registered','successfully','contraseña','password set']
+          .some(p => lower.includes(p));
         if (regOk && authState === 'none' && globalConfig.login) {
           authState = 'done';
           sendAuth(`/login ${globalConfig.login}`);
@@ -256,7 +225,7 @@ function spawnBot(opts) {
       }
     }
 
-        if (joined || source) {
+    if (joined && source !== username) {
       bridgeMcToDiscord(username, source, message);
     }
   });
@@ -269,30 +238,27 @@ function spawnBot(opts) {
     }
   });
 
-    bot.on('disconnect', (reason, intentional) => {
+  bot.on('disconnect', (reason, intentional) => {
     clearTimeout(offlineTimer);
     if (authTimer) { clearTimeout(authTimer); authTimer = null; }
     entry.status = 'offline';
 
-    if (givingUp || intentional) {
-      registry.delete(key);
-      return;
-    }
+    if (givingUp || intentional) { registry.delete(key); return; }
 
     if (!joined) {
       const noRetry = [
-        'another location', 'already connected', 'duplicate',
-        'ya hay alguien', 'nombre', 'username taken', 'name is taken',
-        'ya existe', 'already exists',
+        'another location','already connected','duplicate',
+        'ya hay alguien','nombre','username taken','name is taken',
+        'ya existe','already exists',
       ];
       if (noRetry.some(r => reason.toLowerCase().includes(r))) {
-        log(`Kicked (duplicate connection) — not retrying`);
+        log(`Duplicate connection — not retrying`);
         onEvent('duplicate', username, reason);
         registry.delete(key);
         return;
       }
       if (attempt < MAX_RETRY) {
-        log(`Failed to join (\`${reason}\`) — retrying in 5s (${attempt}/${MAX_RETRY})`);
+        log(`Failed (${reason}) — retrying in 5s`);
         registry.delete(key);
         setTimeout(() => spawnBot({ ...opts, attempt: attempt + 1 }), 5000);
       } else {
@@ -301,7 +267,7 @@ function spawnBot(opts) {
         registry.delete(key);
       }
     } else {
-      log(`Disconnected: \`${reason}\``);
+      log(`Disconnected: ${reason}`);
       onEvent('disconnect', username, reason);
       registry.delete(key);
     }
@@ -311,19 +277,19 @@ function spawnBot(opts) {
     clearTimeout(offlineTimer);
     if (authTimer) { clearTimeout(authTimer); authTimer = null; }
     if (givingUp) return;
-    const m          = err.message || String(err);
-    const isOffline  = m.includes('ECONNREFUSED') || m.includes('ETIMEDOUT') || m.includes('timeout');
+    const m         = err.message || String(err);
+    const isOffline = m.includes('ECONNREFUSED') || m.includes('ETIMEDOUT') || m.includes('timeout');
 
     if (isOffline) {
-      log(`Server unreachable: \`${m}\``);
+      log(`Server unreachable: ${m}`);
       onEvent('offline', username, m);
       registry.delete(key);
     } else if (!joined && attempt < MAX_RETRY) {
-      log(`Error: \`${m}\` — retrying in 5s`);
+      log(`Error: ${m} — retrying in 5s`);
       registry.delete(key);
       setTimeout(() => spawnBot({ ...opts, attempt: attempt + 1 }), 5000);
     } else {
-      log(`Error: \`${m}\``);
+      log(`Error: ${m}`);
       onEvent('error', username, m);
       registry.delete(key);
     }
@@ -334,125 +300,100 @@ function spawnBot(opts) {
 
 const commands = {
 
-  // .help
   async help(msg) {
     const p = PREFIX;
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.PRIMARY)
-          .setTitle('Draconium  —  Command Reference')
-          .setDescription('AFK bot controller for MCPE 0.14.x / PocketMine-MP')
-          .addFields(
-            {
-              name: 'Setup',
-              value: [
-                `\`${p}configure\`  — Interactive wizard: set register password, login password, and join messages.`,
-                `\`${p}config\`  — View the current global config.`,
-              ].join('\n'),
-            },
-            {
-              name: 'Connection',
-              value: [
-                `\`${p}join <ip:port> <bot1,bot2,...>\`  — Connect one or more bots.`,
-                `\`${p}leave <username|*>\`  — Disconnect a bot, or \`*\` to disconnect all.`,
-              ].join('\n'),
-            },
-            {
-              name: 'Chat',
-              value: [
-                `\`${p}chat * <message>\`  — Broadcast from all online bots.`,
-                `\`${p}chat <username> <message>\`  — Send from a specific bot.`,
-              ].join('\n'),
-            },
-            {
-              name: 'Chat Bridge',
-              value: [
-                `\`${p}chatarea <username> #channel on\`  — Bridge bot MC chat to a Discord channel (bidirectional).`,
-                `\`${p}chatarea <username> #channel off\`  — Disable a bridge.`,
-                `\`${p}chatarea list\`  — List all configured bridges.`,
-              ].join('\n'),
-            },
-            {
-              name: 'Info',
-              value: [
-                `\`${p}list\`  — All active bots and their status.`,
-                `\`${p}info <username>\`  — Detailed info for a specific bot.`,
-                `\`${p}logs <username>\`  — Paginated log viewer.`,
-                `\`${p}credits\`  — About.`,
-              ].join('\n'),
-            },
-            {
-              name: 'Example',
-              value: '```\n' +
-                `${p}configure\n` +
-                `${p}join play.example.com:19132 AFK1,AFK2\n` +
-                `${p}chatarea AFK1 #minecraft-chat on\n` +
-                `${p}chat * Hello everyone!\n` +
-                `${p}leave *\n` +
-                '```',
-            },
-          )
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    await msg.reply(cv2([
+      container(C.PRIMARY,
+        '## Draconium — Command Reference',
+        'AFK bot controller for MCPE 0.14.x / PocketMine-MP',
+      ),
+      sep(),
+      container(C.MUTED,
+        '**Setup**',
+        `\`${p}configure\` — Interactive wizard: register password, login password, join messages`,
+        `\`${p}config\` — View current global config`,
+      ),
+      sep(),
+      container(C.MUTED,
+        '**Connection**',
+        `\`${p}join <ip:port> <bot1,bot2,...>\` — Connect one or more bots`,
+        `\`${p}leave <username|*>\` — Disconnect a bot or all bots`,
+      ),
+      sep(),
+      container(C.MUTED,
+        '**Chat**',
+        `\`${p}chat * <message>\` — Broadcast from all online bots`,
+        `\`${p}chat <username> <message>\` — Send from a specific bot`,
+      ),
+      sep(),
+      container(C.MUTED,
+        '**Chat Bridge**',
+        `\`${p}chatarea <username> #channel on\` — Bridge MC chat to a Discord channel`,
+        `\`${p}chatarea <username> #channel off\` — Disable a bridge`,
+        `\`${p}chatarea list\` — List all configured bridges`,
+      ),
+      sep(),
+      container(C.MUTED,
+        '**Info**',
+        `\`${p}list\` — All active bots`,
+        `\`${p}info <username>\` — Detailed bot info`,
+        `\`${p}logs <username>\` — Paginated log viewer`,
+        `\`${p}credits\` — About`,
+      ),
+      sep(),
+      container(C.DARK,
+        '**Example**',
+        `\`\`\`\n${p}configure\n${p}join play.example.com:19132 AFK1,AFK2\n${p}chatarea AFK1 #minecraft-chat on\n${p}chat * Hello!\n${p}leave *\`\`\``,
+      ),
+    ]));
   },
 
-  // .configure  — interactive step-by-step wizard
   async configure(msg) {
     const steps = [
-      { key: 'register',     label: 'Register Password', desc: 'The password sent with /register.' },
-      { key: 'registerMode', label: 'Register Mode',     desc: 'Type `single` for /register <pw>  OR  `double` for /register <pw> <pw>' },
-      { key: 'login',    label: 'Login Password',    desc: 'Used as: `/login <password>`' },
-      { key: 'joinMsg1', label: 'Join Message 1',    desc: 'Sent in-game when the bot is ready. Leave blank to skip.' },
-      { key: 'joinMsg2', label: 'Join Message 2',    desc: 'Second message sent after Join Message 1. Leave blank to skip.' },
+      { key: 'register',     label: 'Register Password', desc: 'Sent with /register.' },
+      { key: 'registerMode', label: 'Register Mode',     desc: 'Type `single` for /register <pw>  or  `double` for /register <pw> <pw>' },
+      { key: 'login',        label: 'Login Password',    desc: 'Used as /login <password>' },
+      { key: 'joinMsg1',     label: 'Join Message 1',    desc: 'Sent in-game when the bot is ready. Leave blank to skip.' },
+      { key: 'joinMsg2',     label: 'Join Message 2',    desc: 'Second message after Join Message 1. Leave blank to skip.' },
     ];
 
     const collected = {};
     let stepIndex   = 0;
 
-    const makeStepEmbed = () => {
+    const makeComponents = () => {
       const step    = steps[stepIndex];
       const current = globalConfig[step.key];
-      return new EmbedBuilder()
-        .setColor(C.INFO)
-        .setTitle(`Configure  —  Step ${stepIndex + 1} of ${steps.length}`)
-        .setDescription(
-          `**${step.label}**\n${step.desc}\n\n` +
-          `Current value: ${current ? `\`${current}\`` : '*(not set)*'}\n\n` +
-          'Type a new value, or click **Skip** to keep the current value.\n' +
-          'Click **Cancel** to abort without saving.'
-        )
-        .setFooter(foot());
+      return [
+        container(C.INFO,
+          `## Configure — Step ${stepIndex + 1} of ${steps.length}`,
+          `**${step.label}**`,
+          step.desc,
+          `Current: ${current ? `\`${current}\`` : 'not set'}`,
+          'Type a new value, or click **Skip** to keep the current value.',
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('cfg_skip').setLabel('Skip').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('cfg_cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger),
+        ),
+      ];
     };
 
-    const makeRow = () => new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('cfg_skip').setLabel('Skip').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('cfg_cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger),
-    );
+    const promptMsg = await msg.reply(cv2(makeComponents()));
 
-    const promptMsg = await msg.reply({ embeds: [makeStepEmbed()], components: [makeRow()] });
-
-    const runStep = async (promptRef) => {
+    const runStep = async (ref) => {
       if (stepIndex >= steps.length) {
         for (const [k, v] of Object.entries(collected)) globalConfig[k] = v;
-        await promptRef.edit({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(C.SUCCESS)
-              .setTitle('Config Saved')
-              .setDescription(configSummary())
-              .setFooter(foot())
-              .setTimestamp(),
-          ],
-          components: [],
-        });
+        await ref.edit(cv2([
+          container(C.SUCCESS,
+            '## Config Saved',
+            '```\n' + configSummary() + '\n```',
+          ),
+        ]));
         return;
       }
 
       const step         = steps[stepIndex];
-      const btnCollector = promptRef.createMessageComponentCollector({ time: 60_000, max: 1 });
+      const btnCollector = ref.createMessageComponentCollector({ time: 60_000, max: 1 });
       const msgCollector = msg.channel.createMessageCollector({
         filter: m => m.author.id === msg.author.id,
         time:   60_000,
@@ -462,21 +403,18 @@ const commands = {
 
       btnCollector.on('collect', async (interaction) => {
         if (interaction.user.id !== msg.author.id) {
-          return interaction.reply({ content: 'This configuration wizard belongs to someone else.', ephemeral: true });
+          return interaction.reply({ content: 'This wizard belongs to someone else.', ephemeral: true });
         }
         cleanup();
         if (interaction.customId === 'cfg_cancel') {
-          await interaction.update({
-            embeds: [new EmbedBuilder().setColor(C.MUTED).setDescription('Configuration cancelled. No changes were saved.').setFooter(foot())],
-            components: [],
-          });
+          await interaction.update(cv2([container(C.MUTED, 'Configuration cancelled. No changes saved.')]));
           return;
         }
-        // Skip — keep current value
         collected[step.key] = globalConfig[step.key];
         stepIndex++;
-        await interaction.update({ embeds: [makeStepEmbed()], components: stepIndex < steps.length ? [makeRow()] : [] });
-        await runStep(promptRef);
+        const next = makeComponents();
+        await interaction.update(cv2(next));
+        await runStep(ref);
       });
 
       msgCollector.on('collect', async (reply) => {
@@ -484,16 +422,13 @@ const commands = {
         reply.delete().catch(() => {});
         collected[step.key] = reply.content.trim();
         stepIndex++;
-        await promptRef.edit({ embeds: [makeStepEmbed()], components: stepIndex < steps.length ? [makeRow()] : [] });
-        await runStep(promptRef);
+        await ref.edit(cv2(makeComponents()));
+        await runStep(ref);
       });
 
       btnCollector.on('end', (_, reason) => {
         if (reason === 'time') {
-          promptRef.edit({
-            embeds: [new EmbedBuilder().setColor(C.WARN).setDescription('Configuration timed out. No changes were saved.').setFooter(foot())],
-            components: [],
-          }).catch(() => {});
+          ref.edit(cv2([container(C.WARN, 'Configuration timed out. No changes saved.')])).catch(() => {});
           msgCollector.stop();
         }
       });
@@ -502,34 +437,25 @@ const commands = {
     await runStep(promptMsg);
   },
 
-  // .config
   async config(msg) {
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.PRIMARY)
-          .setTitle('Global Config')
-          .setDescription(configSummary())
-          .addFields({ name: 'Note', value: `Use \`${PREFIX}configure\` to change these values.` })
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    await msg.reply(cv2([
+      container(C.PRIMARY,
+        '## Global Config',
+        '```\n' + configSummary() + '\n```',
+        `-# Use \`${PREFIX}configure\` to change these values.`,
+      ),
+    ]));
   },
 
-  // .join <ip:port> <bot1,bot2,...>
   async join(msg, args) {
     if (args.length < 2) {
-      return msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(C.WARN)
-            .setTitle('Usage')
-            .setDescription(`\`${PREFIX}join <ip:port> <bot1,bot2,...>\``)
-            .addFields({ name: 'Example', value: `\`${PREFIX}join play.example.com:19132 AFK1,AFK2\`` })
-            .setFooter(foot()),
-        ],
-      });
+      return msg.reply(cv2([
+        container(C.WARN,
+          '## Usage',
+          `\`${PREFIX}join <ip:port> <bot1,bot2,...>\``,
+          `Example: \`${PREFIX}join play.example.com:19132 AFK1,AFK2\``,
+        ),
+      ]));
     }
 
     const [serverArg, usersArg] = args;
@@ -538,70 +464,57 @@ const commands = {
     const usernames = usersArg.split(',').map(u => u.trim()).filter(Boolean);
 
     if (!usernames.length) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription('No valid usernames provided.').setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.DANGER, 'No valid usernames provided.')]));
     }
 
     const cfgLines = [
-      globalConfig.register ? `Register: \`${globalConfig.register}\`` : 'Register: *(not set)*',
-      globalConfig.login    ? `Login: \`${globalConfig.login}\``       : 'Login: *(not set)*',
+      `Register  ${globalConfig.register || 'not set'}`,
+      `Login     ${globalConfig.login    || 'not set'}`,
     ].join('\n');
 
-    const statusMsg = await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.INFO)
-          .setTitle('Connecting...')
-          .addFields(
-            { name: 'Server', value: `\`${host}:${port}\``,                     inline: true },
-            { name: 'Bots',   value: usernames.map(u => `\`${u}\``).join(', '), inline: true },
-            { name: 'Config', value: cfgLines },
-          )
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    const statusMsg = await msg.reply(cv2([
+      container(C.INFO,
+        '## Connecting...',
+        `Server  \`${host}:${port}\``,
+        `Bots    ${usernames.map(u => `\`${u}\``).join(', ')}`,
+        '```\n' + cfgLines + '\n```',
+      ),
+    ]));
 
     const results  = {};
     const statuses = {};
-    for (const u of usernames) statuses[u] = '⏳ queued';
+    for (const u of usernames) statuses[u] = 'queued';
 
-    const statusLabels = {
-      ready:     (u) => `✅ \`${u}\`  joined`,
-      exists:    (u) => `✅ \`${u}\`  already connected`,
-      timeout:   (u) => `❌ \`${u}\`  timed out`,
-      offline:   (u) => `❌ \`${u}\`  server offline`,
-      duplicate: (u) => `⚠️ \`${u}\`  duplicate, skipped`,
-      failed:    (u) => `❌ \`${u}\`  failed after ${MAX_RETRY} attempts`,
-      connecting:(u) => `🔄 \`${u}\`  connecting...`,
+    const statusLine = {
+      ready:      u => `+ ${u}  joined`,
+      exists:     u => `+ ${u}  already connected`,
+      timeout:    u => `x ${u}  timed out`,
+      offline:    u => `x ${u}  server offline`,
+      duplicate:  u => `! ${u}  duplicate, skipped`,
+      failed:     u => `x ${u}  failed after ${MAX_RETRY} attempts`,
+      connecting: u => `~ ${u}  connecting...`,
+      queued:     u => `  ${u}  queued`,
     };
 
     async function updateEmbed(final = false) {
-      const lines = usernames.map(u => {
-        if (results[u]) return (statusLabels[results[u]] ?? ((u) => `❓ \`${u}\`  unknown`))(u);
-        return statuses[u] || statusLabels.connecting(u);
-      });
+      const lines = usernames.map(u => (statusLine[results[u] ?? statuses[u]] ?? statusLine.queued)(u));
       const allOk = final && usernames.every(u => ['ready','exists'].includes(results[u]));
-      await statusMsg.edit({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(final ? (allOk ? C.SUCCESS : C.WARN) : C.INFO)
-            .setTitle(final ? (allOk ? 'All Bots Connected' : 'Connection Results') : 'Connecting...')
-            .setDescription(lines.join('\n'))
-            .addFields({ name: 'Server', value: `\`${host}:${port}\``, inline: true })
-            .setFooter(foot())
-            .setTimestamp(),
-        ],
-      }).catch(() => {});
+      await statusMsg.edit(cv2([
+        container(
+          final ? (allOk ? C.SUCCESS : C.WARN) : C.INFO,
+          final ? (allOk ? '## All Bots Connected' : '## Connection Results') : '## Connecting...',
+          '```diff\n' + lines.join('\n') + '\n```',
+          `Server  \`${host}:${port}\``,
+        ),
+      ])).catch(() => {});
     }
 
     await Promise.all(usernames.map((username, i) =>
-      new Promise((resolve) => {
-        const startDelay = i * BOT_DELAY;
-        statuses[username] = `⏳ \`${username}\`  starts in ${Math.round(startDelay/1000)}s`;
+      new Promise(resolve => {
+        const delay = i * BOT_DELAY;
+        statuses[username] = 'queued';
         setTimeout(async () => {
-          statuses[username] = statusLabels.connecting(username);
+          statuses[username] = 'connecting';
           await updateEmbed();
 
           const done = async (outcome) => {
@@ -615,74 +528,54 @@ const commands = {
             host, port, username, attempt: 1,
             onEvent: (event, u) => {
               if (u !== username) return;
-              const terminal = ['ready', 'exists', 'timeout', 'offline', 'duplicate', 'failed'];
+              const terminal = ['ready','exists','timeout','offline','duplicate','failed'];
               if (terminal.includes(event)) done(event);
             },
           });
 
           setTimeout(() => done('timeout'), OFFLINE_MS + 5000);
-        }, startDelay);
+        }, delay);
       })
     ));
 
     await updateEmbed(true);
   },
 
-  // .leave <username|*>
   async leave(msg, args) {
     const target = args[0];
     if (!target) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.WARN).setDescription(`Usage: \`${PREFIX}leave <username|*>\``).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.WARN, `Usage: \`${PREFIX}leave <username|*>\``)]));
     }
 
     if (target === '*') {
       const count = registry.size;
       if (!count) {
-        return msg.reply({
-          embeds: [new EmbedBuilder().setColor(C.MUTED).setDescription('No bots are currently connected.').setFooter(foot())],
-        });
+        return msg.reply(cv2([container(C.MUTED, 'No bots are currently connected.')]));
       }
-      for (const [, e] of registry) {
-        try { e.bot.disconnect('Discord: leave *'); } catch (_) {}
-      }
+      for (const [, e] of registry) try { e.bot.disconnect('Discord: leave *'); } catch (_) {}
       registry.clear();
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.SUCCESS).setDescription(`Disconnected ${count} bot(s).`).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.SUCCESS, `Disconnected ${count} bot(s).`)]));
     }
 
     const entry = registry.get(target.toLowerCase());
     if (!entry) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription(`No active bot named \`${target}\`.`).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.DANGER, `No active bot named \`${target}\`.`)]));
     }
 
-        entry.bot.disconnect('Discord: leave');
-        return msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.SUCCESS)
-          .setDescription(`\`${entry.username}\` disconnected from \`${entry.server}\`.`)
-          .setFooter(foot()),
-      ],
-    });
+    entry.bot.disconnect('Discord: leave');
+    return msg.reply(cv2([
+      container(C.SUCCESS, `\`${entry.username}\` disconnected from \`${entry.server}\`.`),
+    ]));
   },
 
-  // .list
   async list(msg) {
     if (!registry.size) {
-      return msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(C.MUTED)
-            .setTitle('Active Bots')
-            .setDescription(`No bots connected. Use \`${PREFIX}join\` to connect one.`)
-            .setFooter(foot()),
-        ],
-      });
+      return msg.reply(cv2([
+        container(C.MUTED,
+          '## Active Bots',
+          `No bots connected. Use \`${PREFIX}join\` to connect one.`,
+        ),
+      ]));
     }
 
     const rows = [];
@@ -690,80 +583,60 @@ const commands = {
       const uptime    = e.joinedAt ? fmtDuration(Date.now() - e.joinedAt.getTime()) : '—';
       const bridge    = chatBridges.get(e.username.toLowerCase());
       const bridgeTag = bridge?.enabled ? '  [bridge]' : '';
-      rows.push(`**${e.username}**${bridgeTag}  |  ${statusDot(e.status)}  |  \`${e.server}\`  |  ${uptime}`);
+      rows.push(`${e.username}${bridgeTag}  |  ${statusLabel(e.status)}  |  ${e.server}  |  ${uptime}`);
     }
 
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.PRIMARY)
-          .setTitle(`Active Bots (${registry.size})`)
-          .setDescription(rows.join('\n'))
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    await msg.reply(cv2([
+      container(C.PRIMARY,
+        `## Active Bots (${registry.size})`,
+        '```\n' + rows.join('\n') + '\n```',
+      ),
+    ]));
   },
 
-  // .info <username>
   async info(msg, args) {
     const username = args[0];
     if (!username) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.WARN).setDescription(`Usage: \`${PREFIX}info <username>\``).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.WARN, `Usage: \`${PREFIX}info <username>\``)]));
     }
 
     const e = registry.get(username.toLowerCase());
     if (!e) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription(`No active bot named \`${username}\`.`).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.DANGER, `No active bot named \`${username}\`.`)]));
     }
 
     const uptime   = e.joinedAt ? fmtDuration(Date.now() - e.joinedAt.getTime()) : '—';
     const joinedAt = e.joinedAt ? `<t:${Math.floor(e.joinedAt.getTime() / 1000)}:R>` : '—';
     const bridge   = chatBridges.get(username.toLowerCase());
-
     const { x, y, z } = e.bot.position ?? {};
-    const posStr = (x != null) ? `${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}` : '—';
+    const posStr   = x != null ? `${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}` : '—';
 
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(e.status === 'online' ? C.SUCCESS : C.WARN)
-          .setTitle(`Bot Info  —  ${e.username}`)
-          .addFields(
-            { name: 'Server',    value: `\`${e.server}\``,             inline: true },
-            { name: 'Status',    value: statusDot(e.status),            inline: true },
-            { name: 'Uptime',    value: uptime,                         inline: true },
-            { name: 'Joined',    value: joinedAt,                       inline: true },
-            { name: 'Health',    value: `${e.bot.health ?? '—'}/20`,   inline: true },
-            { name: 'Position',  value: posStr,                         inline: true },
-            { name: 'Log Lines', value: `${e.logs.length}`,            inline: true },
-            { name: 'Bridge',    value: bridge?.enabled ? `<#${bridge.channelId}>` : 'Off', inline: true },
-          )
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    await msg.reply(cv2([
+      container(e.status === 'online' ? C.SUCCESS : C.WARN,
+        `## ${e.username}`,
+        '```\n' + [
+          `Server    ${e.server}`,
+          `Status    ${statusLabel(e.status)}`,
+          `Uptime    ${uptime}`,
+          `Joined    ${joinedAt}`,
+          `Health    ${e.bot.health ?? '—'}/20`,
+          `Position  ${posStr}`,
+          `Logs      ${e.logs.length} lines`,
+          `Bridge    ${bridge?.enabled ? `#${bridge.channelId}` : 'off'}`,
+        ].join('\n') + '\n```',
+      ),
+    ]));
   },
 
-  // .chat * <message>  |  .chat <username> <message>
   async chat(msg, args) {
     if (args.length < 2) {
-      return msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(C.WARN)
-            .setTitle('Usage')
-            .addFields(
-              { name: 'All bots',     value: `\`${PREFIX}chat * <message>\`` },
-              { name: 'Specific bot', value: `\`${PREFIX}chat <username> <message>\`` },
-            )
-            .setFooter(foot()),
-        ],
-      });
+      return msg.reply(cv2([
+        container(C.WARN,
+          '## Usage',
+          `All bots     \`${PREFIX}chat * <message>\``,
+          `Specific bot \`${PREFIX}chat <username> <message>\``,
+        ),
+      ]));
     }
 
     const [target, ...rest] = args;
@@ -771,98 +644,65 @@ const commands = {
 
     if (target === '*') {
       if (!registry.size) {
-        return msg.reply({
-          embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription('No bots connected.').setFooter(foot())],
-        });
+        return msg.reply(cv2([container(C.DANGER, 'No bots connected.')]));
       }
-      const sent    = [];
-      const skipped = [];
+      const sent = [], skipped = [];
       for (const [, e] of registry) {
-        if (e.status === 'online' || (e.bot && e.bot.connected)) { e.bot.chat(message); sent.push(e.username); }
+        if (e.status === 'online' || e.bot?.connected) { e.bot.chat(message); sent.push(e.username); }
         else skipped.push(e.username);
       }
-      const fields = [{ name: 'Message', value: message }];
-      if (sent.length)    fields.push({ name: 'Sent by',  value: sent.map(u => `\`${u}\``).join(', '),    inline: true });
-      if (skipped.length) fields.push({ name: 'Skipped',  value: skipped.map(u => `\`${u}\``).join(', '), inline: true });
-      return msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(sent.length ? C.SUCCESS : C.WARN)
-            .setTitle('Broadcast')
-            .addFields(...fields)
-            .setFooter(foot())
-            .setTimestamp(),
-        ],
-      });
+      return msg.reply(cv2([
+        container(sent.length ? C.SUCCESS : C.WARN,
+          '## Broadcast',
+          `Message  ${message}`,
+          sent.length    ? `Sent by  ${sent.join(', ')}`    : '',
+          skipped.length ? `Skipped  ${skipped.join(', ')}` : '',
+        ),
+      ]));
     }
 
     const entry = registry.get(target.toLowerCase());
     if (!entry) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription(`No active bot named \`${target}\`. Use \`${PREFIX}list\` to see connected bots.`).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.DANGER, `No active bot named \`${target}\`.`)]));
     }
     if (entry.status !== 'online') {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.WARN).setDescription(`\`${entry.username}\` is not in-game yet (status: ${statusDot(entry.status)}).`).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.WARN, `\`${entry.username}\` is not in-game yet (${statusLabel(entry.status)}).`)]));
     }
 
     entry.bot.chat(message);
-    return msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.SUCCESS)
-          .setTitle('Message Sent')
-          .addFields(
-            { name: 'Message', value: message },
-            { name: 'From',    value: `\`${entry.username}\``, inline: true },
-            { name: 'Server',  value: `\`${entry.server}\``,   inline: true },
-          )
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    return msg.reply(cv2([
+      container(C.SUCCESS,
+        '## Message Sent',
+        `From    \`${entry.username}\``,
+        `Server  \`${entry.server}\``,
+        `> ${message}`,
+      ),
+    ]));
   },
 
-  // .chatarea <username> #channel <on|off>  |  .chatarea list
   async chatarea(msg, args) {
     if (args[0] === 'list') {
       if (!chatBridges.size) {
-        return msg.reply({
-          embeds: [new EmbedBuilder().setColor(C.MUTED).setTitle('Chat Bridges').setDescription('No bridges configured.').setFooter(foot())],
-        });
+        return msg.reply(cv2([container(C.MUTED, '## Chat Bridges', 'No bridges configured.')]));
       }
       const rows = [];
       for (const [username, b] of chatBridges) {
-        rows.push(`**${username}**  ->  <#${b.channelId}>  |  ${b.enabled ? 'Enabled' : 'Disabled'}`);
+        rows.push(`${username}  ->  #${b.channelId}  |  ${b.enabled ? 'Enabled' : 'Disabled'}`);
       }
-      return msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(C.BRIDGE)
-            .setTitle('Chat Bridges')
-            .setDescription(rows.join('\n'))
-            .setFooter(foot())
-            .setTimestamp(),
-        ],
-      });
+      return msg.reply(cv2([
+        container(C.BRIDGE, '## Chat Bridges', '```\n' + rows.join('\n') + '\n```'),
+      ]));
     }
 
     if (args.length < 3) {
-      return msg.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(C.WARN)
-            .setTitle('Usage')
-            .addFields(
-              { name: 'Enable',  value: `\`${PREFIX}chatarea <username> #channel on\`` },
-              { name: 'Disable', value: `\`${PREFIX}chatarea <username> #channel off\`` },
-              { name: 'List',    value: `\`${PREFIX}chatarea list\`` },
-            )
-            .setFooter(foot()),
-        ],
-      });
+      return msg.reply(cv2([
+        container(C.WARN,
+          '## Usage',
+          `Enable   \`${PREFIX}chatarea <username> #channel on\``,
+          `Disable  \`${PREFIX}chatarea <username> #channel off\``,
+          `List     \`${PREFIX}chatarea list\``,
+        ),
+      ]));
     }
 
     const [username, channelMention, toggle] = args;
@@ -872,73 +712,56 @@ const commands = {
     let channel;
     try { channel = await client.channels.fetch(channelId); } catch (_) {}
     if (!channel) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription('Could not find that channel. Make sure you mention it with #.').setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.DANGER, 'Could not find that channel. Mention it with #.')]));
     }
 
-    const key = username.toLowerCase();
-    chatBridges.set(key, { channelId, enabled });
-    const entry = registry.get(key);
+    chatBridges.set(username.toLowerCase(), { channelId, enabled });
+    const entry = registry.get(username.toLowerCase());
 
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(enabled ? C.BRIDGE : C.MUTED)
-          .setTitle(`Chat Bridge ${enabled ? 'Enabled' : 'Disabled'}`)
-          .setDescription(enabled
-            ? `MC chat from **${username}** will appear in <#${channelId}>.\nMessages sent in <#${channelId}> will be forwarded to MC via **${username}**.`
-            : `Bridge for **${username}** has been disabled.`
-          )
-          .addFields(
-            { name: 'Bot',     value: `\`${username}\``, inline: true },
-            { name: 'Channel', value: `<#${channelId}>`, inline: true },
-            { name: 'Status',  value: entry ? statusDot(entry.status) : 'Bot not connected', inline: true },
-          )
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    await msg.reply(cv2([
+      container(enabled ? C.BRIDGE : C.MUTED,
+        `## Chat Bridge ${enabled ? 'Enabled' : 'Disabled'}`,
+        enabled
+          ? `MC chat from **${username}** will appear in <#${channelId}>.\nMessages in <#${channelId}> will be forwarded via **${username}**.`
+          : `Bridge for **${username}** has been disabled.`,
+        '```\n' + [
+          `Bot      ${username}`,
+          `Channel  #${channelId}`,
+          `Status   ${entry ? statusLabel(entry.status) : 'Bot not connected'}`,
+        ].join('\n') + '\n```',
+      ),
+    ]));
   },
 
-  // .logs <username>
   async logs(msg, args) {
     const username = args[0];
     if (!username) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.WARN).setDescription(`Usage: \`${PREFIX}logs <username>\``).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.WARN, `Usage: \`${PREFIX}logs <username>\``)]));
     }
 
     const entry = registry.get(username.toLowerCase());
     if (!entry) {
-      return msg.reply({
-        embeds: [new EmbedBuilder().setColor(C.DANGER).setDescription(`No active bot named \`${username}\`.`).setFooter(foot())],
-      });
+      return msg.reply(cv2([container(C.DANGER, `No active bot named \`${username}\`.`)]));
     }
 
     const pages = paginateLogs(entry.logs.slice(-50));
     let pi = 0;
 
-    const makeEmbed = (i) =>
-      new EmbedBuilder()
-        .setColor(C.DARK)
-        .setTitle(`Logs  —  ${entry.username}`)
-        .setDescription(pages[i] || '*(empty)*')
-        .setFooter({ text: `Page ${i + 1}/${pages.length}  |  ${entry.server}  |  Draconium` })
-        .setTimestamp();
+    const makeComponents = (i) => [
+      container(C.DARK,
+        `## Logs — ${entry.username}`,
+        '```\n' + (pages[i] || '(empty)') + '\n```',
+        `-# Page ${i + 1}/${pages.length}  |  ${entry.server}`,
+      ),
+      ...(pages.length > 1 ? [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('lp').setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(i === 0),
+          new ButtonBuilder().setCustomId('ln').setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(i >= pages.length - 1),
+        ),
+      ] : []),
+    ];
 
-    const makeRow = (i) =>
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('lp').setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(i === 0),
-        new ButtonBuilder().setCustomId('ln').setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(i >= pages.length - 1),
-      );
-
-    const reply = await msg.reply({
-      embeds:     [makeEmbed(pi)],
-      components: pages.length > 1 ? [makeRow(pi)] : [],
-    });
-
+    const reply = await msg.reply(cv2(makeComponents(pi)));
     if (pages.length <= 1) return;
 
     const col = reply.createMessageComponentCollector({ time: 120_000 });
@@ -948,28 +771,24 @@ const commands = {
       }
       if (interaction.customId === 'lp' && pi > 0)               pi--;
       if (interaction.customId === 'ln' && pi < pages.length - 1) pi++;
-      await interaction.update({ embeds: [makeEmbed(pi)], components: [makeRow(pi)] });
+      await interaction.update(cv2(makeComponents(pi)));
     });
-    col.on('end', () => reply.edit({ components: [] }).catch(() => {}));
+    col.on('end', () => reply.edit(cv2(makeComponents(pi))).catch(() => {}));
   },
 
-  // .credits
   async credits(msg) {
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.PRIMARY)
-          .setTitle('Draconium')
-          .setDescription('AFK Bot for MCPE 0.14.x / PocketMine-MP\nCustom RakNet implementation — no game-protocol dependencies.')
-          .addFields(
-            { name: 'Stack',    value: 'Node.js  |  discord.js v14  |  draconium', inline: false },
-            { name: 'Protocol', value: 'MCPE Protocol 70 (v0.14.x)',                inline: true  },
-            { name: 'License',  value: 'GNU',                                       inline: true  },
-          )
-          .setFooter(foot())
-          .setTimestamp(),
-      ],
-    });
+    await msg.reply(cv2([
+      container(C.PRIMARY,
+        '## Draconium',
+        'AFK Bot for MCPE 0.14.x / PocketMine-MP',
+        'Custom RakNet implementation — no game-protocol dependencies.',
+        '```\n' + [
+          'Stack     Node.js  |  discord.js v14  |  draconium',
+          'Protocol  MCPE Protocol 70 (v0.14.x)',
+          'License   GPL-3.0',
+        ].join('\n') + '\n```',
+      ),
+    ]));
   },
 };
 
@@ -984,13 +803,12 @@ const client = new Client({
 client.on('messageCreate', async (msg) => {
   if (msg.author.bot) return;
 
-    if (!msg.content.startsWith(PREFIX)) {
+  if (!msg.content.startsWith(PREFIX)) {
     for (const [username, bridge] of chatBridges) {
       if (!bridge.enabled || bridge.channelId !== msg.channelId) continue;
       const entry = registry.get(username);
       if (!entry || entry.status !== 'online') continue;
-      // Prefix the message with the Discord username so it's identifiable in MC
-      entry.bot.chat(msg.content);
+      entry.bot.chat(`${msg.author.username}: ${msg.content}`);
     }
     return;
   }
@@ -1002,34 +820,42 @@ client.on('messageCreate', async (msg) => {
   try {
     await commands[cmd](msg, args);
   } catch (err) {
-    console.error('[Discord] Command error:', err);
-    await msg.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(C.DANGER)
-          .setTitle('Internal Error')
-          .setDescription('```' + (err.message || String(err)) + '```')
-          .setFooter(foot()),
-      ],
-    }).catch(() => {});
+    await msg.reply(cv2([
+      container(C.DANGER,
+        '## Error',
+        '```\n' + (err.message || String(err)) + '\n```',
+      ),
+    ])).catch(() => {});
   }
 });
 
 client.once('clientReady', () => {
-  console.log(`[Discord] Online as ${client.user.tag}`);
+  process.stdout.write(`[Draconium] Online as ${client.user.tag}\n`);
   client.user.setActivity(`${PREFIX}help  |  Draconium`);
 });
 
-client.login(DISCORD_TOKEN).catch((err) => {
-  console.error('[Discord] Login failed:', err.message);
+client.login(DISCORD_TOKEN).catch(err => {
+  process.stderr.write(`[Draconium] Login failed: ${err.message}\n`);
   process.exit(1);
 });
 
-process.on('SIGINT', () => {
-  console.log('[Draconium] Shutting down...');
-  for (const [, e] of registry) {
-    try { e.bot.disconnect('shutdown'); } catch (_) {}
+function gracefulShutdown() {
+  process.stdout.write('[Draconium] Shutting down...\n');
+  const bots = [...registry.values()];
+  if (!bots.length) { client.destroy(); process.exit(0); return; }
+
+  let remaining = bots.length;
+  const done = () => { if (--remaining <= 0) { client.destroy(); process.exit(0); } };
+
+  for (const e of bots) {
+    try {
+      e.bot.once('disconnect', done);
+      e.bot.disconnect('shutdown');
+    } catch (_) { done(); }
   }
-  client.destroy();
-  setTimeout(() => process.exit(0), 500);
-});
+
+  setTimeout(() => { client.destroy(); process.exit(0); }, 5000);
+}
+
+process.on('SIGINT',  gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
